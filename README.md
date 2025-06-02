@@ -51,3 +51,5 @@ cd house-price-prediction
 2. Install dependencies
 pip install -r requirements.txt
 3. Run the notebooks or Python scripts
+
+
