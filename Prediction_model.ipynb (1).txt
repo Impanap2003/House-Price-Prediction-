@@ -1,0 +1,445 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "provenance": []
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    }
+  },
+  "cells": [
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "uw0IfKqOLzEe"
+      },
+      "outputs": [],
+      "source": [
+        "pip install pandas numpy scikit-learn matplotlib seaborn xgboost"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Step 1: Setup and Data Loading"
+      ],
+      "metadata": {
+        "id": "z8w7Y6u6OVIp"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import pandas as pd\n",
+        "import numpy as np\n",
+        "import matplotlib.pyplot as plt\n",
+        "import seaborn as sns\n",
+        "from sklearn.model_selection import train_test_split, cross_val_score\n",
+        "from sklearn.linear_model import LinearRegression\n",
+        "from sklearn.ensemble import RandomForestRegressor\n",
+        "from sklearn.tree import DecisionTreeRegressor\n",
+        "from sklearn.preprocessing import StandardScaler\n",
+        "from sklearn.metrics import mean_squared_error\n",
+        "import warnings\n",
+        "warnings.filterwarnings('ignore')\n",
+        "\n",
+        "# Load the dataset (assuming it's the Kaggle House Prices dataset)\n",
+        "# Download from: https://www.kaggle.com/c/house-prices-advanced-regression-techniques/data\n",
+        "train = pd.read_csv('train.csv')\n",
+        "test = pd.read_csv('test.csv')\n",
+        "\n",
+        "# Combine train and test for consistent preprocessing\n",
+        "all_data = pd.concat([train.drop('SalePrice', axis=1), test], axis=0)\n",
+        "y_train = train['SalePrice']"
+      ],
+      "metadata": {
+        "id": "SNwXe0pvL9ak"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Step 2: Data Preprocessing\n",
+        "The paper emphasizes data cleaning, handling missing values, outlier detection, normalization, and feature engineering."
+      ],
+      "metadata": {
+        "id": "wHZPgPWuOsLd"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Handle missing values\n",
+        "def handle_missing_values(df):\n",
+        "    # Numeric columns: Fill with median\n",
+        "    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns\n",
+        "    df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())\n",
+        "\n",
+        "    # Categorical columns: Fill with mode\n",
+        "    categorical_cols = df.select_dtypes(include=['object']).columns\n",
+        "    df[categorical_cols] = df[categorical_cols].fillna(df[categorical_cols].mode().iloc[0])\n",
+        "\n",
+        "    return df\n",
+        "\n",
+        "all_data = handle_missing_values(all_data)\n",
+        "\n",
+        "# Outlier detection using IQR\n",
+        "def remove_outliers(df, cols):\n",
+        "    for col in cols:\n",
+        "        Q1 = df[col].quantile(0.25)\n",
+        "        Q3 = df[col].quantile(0.75)\n",
+        "        IQR = Q3 - Q1\n",
+        "        df = df[~((df[col] < (Q1 - 1.5 * IQR)) | (df[col] > (Q3 + 1.5 * IQR)))]\n",
+        "    return df\n",
+        "\n",
+        "# Apply to key numeric features\n",
+        "key_features = ['LotFrontage', 'LotArea', 'OverallQual', 'GrLivArea', 'GarageCars']\n",
+        "train_clean = train[key_features + ['SalePrice']].copy()\n",
+        "train_clean = remove_outliers(train_clean, key_features)\n",
+        "y_train = train_clean['SalePrice']\n",
+        "X_train_clean = train_clean.drop('SalePrice', axis=1)\n",
+        "\n",
+        "# Encode categorical variables\n",
+        "all_data = pd.get_dummies(all_data)\n",
+        "\n",
+        "# Normalize numeric features\n",
+        "scaler = StandardScaler()\n",
+        "numeric_cols = all_data.select_dtypes(include=['int64', 'float64']).columns\n",
+        "all_data[numeric_cols] = scaler.fit_transform(all_data[numeric_cols])\n",
+        "\n",
+        "# Split back into train and test\n",
+        "X_train = all_data.iloc[:len(train), :]\n",
+        "X_test = all_data.iloc[len(train):, :]\n",
+        "\n",
+        "# Align cleaned training data\n",
+        "X_train = X_train.loc[train_clean.index, :]\n",
+        "\n",
+        "# Train-test split for validation\n",
+        "X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(\n",
+        "    X_train, y_train, test_size=0.2, random_state=42\n",
+        ")"
+      ],
+      "metadata": {
+        "id": "HeOGHigYMGZa"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Step 3: Model Training and Evaluation\n",
+        "The paper evaluates models using cross-validation and Mean Squared Error (MSE). Below, we implement Linear Regression, Random Forest, and Decision Tree with parameter tuning as described."
+      ],
+      "metadata": {
+        "id": "W5MbvZgVO7nP"
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Linear Regression"
+      ],
+      "metadata": {
+        "id": "sSXwa8d0PHqa"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Linear Regression with cross-validation for alpha (regularization)\n",
+        "from sklearn.linear_model import Ridge\n",
+        "\n",
+        "alphas = np.logspace(-2, 2, 50)\n",
+        "cv_errors = []\n",
+        "\n",
+        "for alpha in alphas:\n",
+        "    model = Ridge(alpha=alpha)\n",
+        "    scores = cross_val_score(model, X_train, np.log1p(y_train), scoring='neg_mean_squared_error', cv=5)\n",
+        "    cv_errors.append(-scores.mean())\n",
+        "\n",
+        "# Plot Alpha vs CV Error\n",
+        "plt.figure(figsize=(8, 6))\n",
+        "plt.plot(alphas, cv_errors, marker='o')\n",
+        "plt.xscale('log')\n",
+        "plt.xlabel('Alpha')\n",
+        "plt.ylabel('Cross-Validation Error')\n",
+        "plt.title('Alpha vs CV Error for Ridge Regression')\n",
+        "plt.show()\n",
+        "\n",
+        "# Optimal alpha\n",
+        "optimal_alpha = alphas[np.argmin(cv_errors)]\n",
+        "print(f\"Optimal Alpha: {optimal_alpha:.3f}, Minimum CV Error: {min(cv_errors):.4f}\")\n",
+        "\n",
+        "# Train final model\n",
+        "lr_model = Ridge(alpha=optimal_alpha)\n",
+        "lr_model.fit(X_train_split, np.log1p(y_train_split))\n",
+        "lr_pred = np.expm1(lr_model.predict(X_val_split))\n",
+        "lr_mse = mean_squared_error(y_val_split, lr_pred)\n",
+        "print(f\"Linear Regression MSE: {lr_mse:.4f}\")"
+      ],
+      "metadata": {
+        "id": "Jdj_uyIyMN0U"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Random Forest"
+      ],
+      "metadata": {
+        "id": "z3TMw_XCPT20"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Random Forest with cross-validation for n_estimators\n",
+        "n_estimators_range = range(50, 301, 50)\n",
+        "cv_errors_rf = []\n",
+        "\n",
+        "for n in n_estimators_range:\n",
+        "    model = RandomForestRegressor(n_estimators=n, max_features=0.3, random_state=42)\n",
+        "    scores = cross_val_score(model, X_train, np.log1p(y_train), scoring='neg_mean_squared_error', cv=5)\n",
+        "    cv_errors_rf.append(-scores.mean())\n",
+        "\n",
+        "# Plot N_estimators vs CV Error\n",
+        "plt.figure(figsize=(8, 6))\n",
+        "plt.plot(n_estimators_range, cv_errors_rf, marker='o')\n",
+        "plt.xlabel('N_estimators')\n",
+        "plt.ylabel('Cross-Validation Error')\n",
+        "plt.title('N_estimators vs CV Error for Random Forest')\n",
+        "plt.show()\n",
+        "\n",
+        "# Optimal n_estimators\n",
+        "optimal_n = n_estimators_range[np.argmin(cv_errors_rf)]\n",
+        "print(f\"Optimal N_estimators: {optimal_n}, Minimum CV Error: {min(cv_errors_rf):.4f}\")\n",
+        "\n",
+        "# Train final model\n",
+        "rf_model = RandomForestRegressor(n_estimators=optimal_n, max_features=0.3, random_state=42)\n",
+        "rf_model.fit(X_train_split, np.log1p(y_train_split))\n",
+        "rf_pred = np.expm1(rf_model.predict(X_val_split))\n",
+        "rf_mse = mean_squared_error(y_val_split, rf_pred)\n",
+        "print(f\"Random Forest MSE: {rf_mse:.4f}\")"
+      ],
+      "metadata": {
+        "id": "srzMyaVbMRfq"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Decision Tree"
+      ],
+      "metadata": {
+        "id": "YbSUNQGUPayt"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Decision Tree with cross-validation for max_depth\n",
+        "max_depths = range(3, 21)\n",
+        "cv_errors_dt = []\n",
+        "\n",
+        "for depth in max_depths:\n",
+        "    model = DecisionTreeRegressor(max_depth=depth, random_state=42)\n",
+        "    scores = cross_val_score(model, X_train, np.log1p(y_train), scoring='neg_mean_squared_error', cv=5)\n",
+        "    cv_errors_dt.append(-scores.mean())\n",
+        "\n",
+        "# Plot Max Depth vs CV Error\n",
+        "plt.figure(figsize=(8, 6))\n",
+        "plt.plot(max_depths, cv_errors_dt, marker='o')\n",
+        "plt.xlabel('Max Depth')\n",
+        "plt.ylabel('Cross-Validation Error')\n",
+        "plt.title('Max Depth vs CV Error for Decision Tree')\n",
+        "plt.show()\n",
+        "\n",
+        "# Optimal max_depth\n",
+        "optimal_depth = max_depths[np.argmin(cv_errors_dt)]\n",
+        "print(f\"Optimal Max Depth: {optimal_depth}, Minimum CV Error: {min(cv_errors_dt):.4f}\")\n",
+        "\n",
+        "# Train final model\n",
+        "dt_model = DecisionTreeRegressor(max_depth=optimal_depth, random_state=42)\n",
+        "dt_model.fit(X_train_split, np.log1p(y_train_split))\n",
+        "dt_pred = np.expm1(dt_model.predict(X_val_split))\n",
+        "dt_mse = mean_squared_error(y_val_split, dt_pred)\n",
+        "print(f\"Decision Tree MSE: {dt_mse:.4f}\")"
+      ],
+      "metadata": {
+        "id": "FWjZw3vxMT3g"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Step 4: Data Visualization\n",
+        "The paper includes visualizations like the distribution of house prices and feature correlations."
+      ],
+      "metadata": {
+        "id": "nZWFpSBWPknm"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# House Price Distribution\n",
+        "plt.figure(figsize=(8, 6))\n",
+        "sns.histplot(y_train, kde=True)\n",
+        "plt.xlabel('SalePrice')\n",
+        "plt.ylabel('Density')\n",
+        "plt.title('Normal Distribution of House Prices')\n",
+        "plt.show()\n",
+        "\n",
+        "# Correlation Plot for Top 10 Features\n",
+        "corr_matrix = train[key_features + ['SalePrice']].corr()\n",
+        "top_features = corr_matrix['SalePrice'].sort_values(ascending=False).head(11).index[1:]\n",
+        "plt.figure(figsize=(10, 8))\n",
+        "sns.heatmap(corr_matrix.loc[top_features, top_features], annot=True, cmap='coolwarm')\n",
+        "plt.title('Top 10 Features with Highest Correlations')\n",
+        "plt.show()"
+      ],
+      "metadata": {
+        "id": "1s8NjV6BMWE6"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Improvements Using Gradient Boosting and Stacked Models\n",
+        "To improve the paper's approach, we introduce two advanced techniques: Gradient Boosting (using XGBoost) and Stacked Models (combining predictions from multiple models). These methods can capture complex patterns and improve prediction accuracy."
+      ],
+      "metadata": {
+        "id": "DnRo1T8kPuGl"
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 1. Gradient Boosting with XGBoost\n",
+        "Gradient Boosting models like XGBoost are powerful for regression tasks due to their ability to handle nonlinear relationships and feature interactions."
+      ],
+      "metadata": {
+        "id": "tIUjNG8sP9Er"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from xgboost import XGBRegressor\n",
+        "\n",
+        "# XGBoost with cross-validation for n_estimators\n",
+        "xgb_model = XGBRegressor(objective='reg:squarederror', random_state=42)\n",
+        "param_grid = {\n",
+        "    'n_estimators': [100, 150, 200],\n",
+        "    'max_depth': [3, 5, 7],\n",
+        "    'learning_rate': [0.01, 0.1]\n",
+        "}\n",
+        "\n",
+        "from sklearn.model_selection import GridSearchCV\n",
+        "grid_search = GridSearchCV(xgb_model, param_grid, cv=5, scoring='neg_mean_squared_error', n_jobs=-1)\n",
+        "grid_search.fit(X_train_split, np.log1p(y_train_split))\n",
+        "\n",
+        "# Best parameters and model\n",
+        "print(f\"Best Parameters: {grid_search.best_params_}\")\n",
+        "xgb_model = grid_search.best_estimator_\n",
+        "xgb_pred = np.expm1(xgb_model.predict(X_val_split))\n",
+        "xgb_mse = mean_squared_error(y_val_split, xgb_pred)\n",
+        "print(f\"XGBoost MSE: {xgb_mse:.4f}\")"
+      ],
+      "metadata": {
+        "id": "ph7Tc7RLMYcC"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 2. Stacked Model\n",
+        "Stacking combines predictions from multiple models (Linear Regression, Random Forest, Decision Tree, and XGBoost) using a meta-learner (e.g., Linear Regression) to improve performance."
+      ],
+      "metadata": {
+        "id": "rx-4bfEZQEFt"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from sklearn.ensemble import StackingRegressor\n",
+        "\n",
+        "# Define base models\n",
+        "base_models = [\n",
+        "    ('lr', Ridge(alpha=optimal_alpha)),\n",
+        "    ('rf', RandomForestRegressor(n_estimators=optimal_n, max_features=0.3, random_state=42)),\n",
+        "    ('dt', DecisionTreeRegressor(max_depth=optimal_depth, random_state=42)),\n",
+        "    ('xgb', XGBRegressor(**grid_search.best_params_, random_state=42))\n",
+        "]\n",
+        "\n",
+        "# Define meta-learner\n",
+        "meta_learner = LinearRegression()\n",
+        "\n",
+        "# Stacking model\n",
+        "stacked_model = StackingRegressor(estimators=base_models, final_estimator=meta_learner, cv=5)\n",
+        "stacked_model.fit(X_train_split, np.log1p(y_train_split))\n",
+        "stacked_pred = np.expm1(stacked_model.predict(X_val_split))\n",
+        "stacked_mse = mean_squared_error(y_val_split, stacked_pred)\n",
+        "print(f\"Stacked Model MSE: {stacked_mse:.4f}\")"
+      ],
+      "metadata": {
+        "id": "YWg9mygjMaji"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 3. Model Comparison"
+      ],
+      "metadata": {
+        "id": "xu93G7TANo2u"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Compare MSEs\n",
+        "models = ['Linear Regression', 'Random Forest', 'Decision Tree', 'XGBoost', 'Stacked Model']\n",
+        "mses = [lr_mse, rf_mse, dt_mse, xgb_mse, stacked_mse]\n",
+        "\n",
+        "# Create a bar chart\n",
+        "plt.figure(figsize=(10, 6))\n",
+        "plt.bar(models, mses, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'])\n",
+        "plt.xlabel('Model')\n",
+        "plt.ylabel('Mean Squared Error')\n",
+        "plt.title('Model Performance Comparison')\n",
+        "plt.xticks(rotation=45)\n",
+        "plt.tight_layout()\n",
+        "plt.show()"
+      ],
+      "metadata": {
+        "id": "wcAuSHSGNobF"
+      },
+      "execution_count": null,
+      "outputs": []
+    }
+  ]
+}
